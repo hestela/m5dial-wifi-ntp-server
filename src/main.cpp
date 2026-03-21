@@ -18,9 +18,13 @@ TinyGPSPlus gps;
 AsyncUDP    udp;
 bool        fixAcquired = false;
 
+// Snapshot updated each time a fresh GPS sentence is parsed
+volatile uint32_t gpsNtpSeconds = 0;  // NTP seconds at last GPS update
+volatile uint32_t gpsSnapshotMs = 0;  // millis() at that moment
+
 // --- Time helpers -----------------------------------------------------------
 
-// Convert TinyGPS date+time to seconds since NTP epoch (1 Jan 1900 UTC)
+// Convert TinyGPS date+time to NTP seconds (call only when gps.time.isUpdated())
 uint32_t gpsToNtp() {
     struct tm t = {};
     t.tm_year = gps.date.year() - 1900;
@@ -31,9 +35,15 @@ uint32_t gpsToNtp() {
     t.tm_sec  = gps.time.second();
     t.tm_isdst = 0;
     time_t unix = mktime(&t);
-    // mktime treats tm as local time; we need UTC — apply timezone offset back
-    // Simplest fix: set TZ=UTC before calling mktime (done in setup)
     return (uint32_t)(unix + NTP_EPOCH_OFFSET);
+}
+
+// Current NTP time interpolated from last GPS snapshot + elapsed millis
+void currentNtpTime(uint32_t &seconds, uint32_t &fraction) {
+    uint32_t elapsed = millis() - gpsSnapshotMs;
+    seconds  = gpsNtpSeconds + elapsed / 1000;
+    // NTP fraction: 2^32 units per second, so 1ms = 4294967 units
+    fraction = (elapsed % 1000) * 4294967UL;
 }
 
 // Write a 32-bit value big-endian into a buffer
@@ -46,19 +56,58 @@ static void writeU32BE(uint8_t *buf, uint32_t val) {
 
 // --- Display helpers --------------------------------------------------------
 
+const int CX = 120;  // display centre x
+const int CY = 120;  // display centre y
+
+// Small status messages used during WiFi/GPS init phases
 void displayMessage(const char *line1, const char *line2 = nullptr) {
     M5Dial.Display.clear();
+    M5Dial.Display.setTextFont(&fonts::FreeSans9pt7b);
+    M5Dial.Display.setTextSize(1);
     if (line2) {
-        M5Dial.Display.drawString(line1,
-            M5Dial.Display.width() / 2,
-            M5Dial.Display.height() / 2 - 20);
-        M5Dial.Display.drawString(line2,
-            M5Dial.Display.width() / 2,
-            M5Dial.Display.height() / 2 + 20);
+        M5Dial.Display.drawString(line1, CX, CY - 16);
+        M5Dial.Display.drawString(line2, CX, CY + 16);
     } else {
-        M5Dial.Display.drawString(line1,
-            M5Dial.Display.width() / 2,
-            M5Dial.Display.height() / 2);
+        M5Dial.Display.drawString(line1, CX, CY);
+    }
+}
+
+// Full clock face — call every second
+// Layout (240x240 circular):
+//   y= 88  H:MM  — Orbitron_Light_32 size 2  (~64px tall)
+//   y=152  :SS AM/PM — Orbitron_Light_32 size 1  (~32px tall)
+//   y=192  "UTC" — FreeSans9pt7b size 1
+void displayClock(bool valid, int h24 = 0, int m = 0, int s = 0) {
+    M5Dial.Display.clear();
+
+    if (valid) {
+        bool pm  = h24 >= 12;
+        int  h12 = h24 % 12;
+        if (h12 == 0) h12 = 12;
+
+        char hmBuf[8], secBuf[10];
+        snprintf(hmBuf,  sizeof(hmBuf),  "%d:%02d", h12, m);
+        snprintf(secBuf, sizeof(secBuf), ":%02d %s", s, pm ? "PM" : "AM");
+
+        M5Dial.Display.setTextFont(&fonts::Orbitron_Light_32);
+        M5Dial.Display.setTextSize(2);
+        M5Dial.Display.drawString(hmBuf, CX, 88);
+
+        M5Dial.Display.setTextSize(1);
+        M5Dial.Display.drawString(secBuf, CX, 152);
+
+        M5Dial.Display.setTextFont(&fonts::FreeSans9pt7b);
+        M5Dial.Display.drawString("UTC", CX, 192);
+    } else {
+        M5Dial.Display.setTextFont(&fonts::Orbitron_Light_32);
+        M5Dial.Display.setTextSize(2);
+        M5Dial.Display.drawString("--:--", CX, 88);
+
+        M5Dial.Display.setTextSize(1);
+        M5Dial.Display.drawString(":--", CX, 152);
+
+        M5Dial.Display.setTextFont(&fonts::FreeSans9pt7b);
+        M5Dial.Display.drawString("waiting for GPS", CX, 192);
     }
 }
 
@@ -83,7 +132,8 @@ void startNtpServer() {
             liVnMode = 0xE4;  // LI=3 (unsynchronised), VN=4, Mode=4
         }
 
-        uint32_t now = gpsToNtp();
+        uint32_t nowSec, nowFrac;
+        currentNtpTime(nowSec, nowFrac);
 
         response[0]  = liVnMode;
         response[1]  = 1;       // Stratum 1 — primary GPS reference
@@ -98,8 +148,8 @@ void startNtpServer() {
         response[12] = 'G'; response[13] = 'P';
         response[14] = 'S'; response[15] = 0;
 
-        // Reference timestamp (when clock was last set)
-        writeU32BE(response + 16, now);
+        // Reference timestamp (when clock was last set — the GPS snapshot)
+        writeU32BE(response + 16, gpsNtpSeconds);
         writeU32BE(response + 20, 0);
 
         // Originate timestamp — copy T1 from client request (bytes 40-47)
@@ -113,17 +163,20 @@ void startNtpServer() {
         response[31] = packet.data()[47];
 
         // Receive timestamp
-        writeU32BE(response + 32, now);
-        writeU32BE(response + 36, 0);
+        writeU32BE(response + 32, nowSec);
+        writeU32BE(response + 36, nowFrac);
 
-        // Transmit timestamp
-        writeU32BE(response + 40, now);
-        writeU32BE(response + 44, 0);
+        // Transmit timestamp (re-sample just before sending)
+        currentNtpTime(nowSec, nowFrac);
+        writeU32BE(response + 40, nowSec);
+        writeU32BE(response + 44, nowFrac);
 
         packet.write(response, NTP_PACKET_SIZE);
 
-        Serial.printf("NTP request from %s — served %lu\n",
-            packet.remoteIP().toString().c_str(), (unsigned long)now);
+        Serial.printf("NTP request from %s — served %lu.%03lu\n",
+            packet.remoteIP().toString().c_str(),
+            (unsigned long)nowSec,
+            (unsigned long)(nowFrac / 4294967UL));
     });
 }
 
@@ -139,11 +192,9 @@ void setup() {
     setenv("TZ", "UTC0", 1);
     tzset();
 
-    // Display setup
+    // Display setup — colour and datum are set once; font/size vary per draw call
     M5Dial.Display.setTextColor(GREEN);
     M5Dial.Display.setTextDatum(middle_center);
-    M5Dial.Display.setTextFont(&fonts::FreeSans9pt7b);
-    M5Dial.Display.setTextSize(1);
 
     // GPS
     Serial2.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
@@ -165,7 +216,7 @@ void setup() {
     displayMessage("Connected", ipLine);
     delay(2000);
 
-    displayMessage("GPS fix...");
+    displayClock(false);
     Serial.println("Waiting for GPS fix...");
 
     startNtpServer();
@@ -178,6 +229,12 @@ void loop() {
         gps.encode(Serial2.read());
     }
 
+    // Snapshot time whenever a fresh GPS sentence arrives
+    if (gps.time.isUpdated() && gps.date.isValid() && gps.time.isValid()) {
+        gpsNtpSeconds = gpsToNtp();
+        gpsSnapshotMs = millis();
+    }
+
     if (!fixAcquired && gps.location.isValid()) {
         fixAcquired = true;
         Serial.println("GPS fix acquired!");
@@ -185,11 +242,12 @@ void loop() {
 
     // Update display once per second
     static uint32_t lastDisplay = 0;
-    if (fixAcquired && millis() - lastDisplay >= 1000) {
+    if (millis() - lastDisplay >= 1000) {
         lastDisplay = millis();
-        char timeBuf[12];
-        snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d:%02d",
-            gps.time.hour(), gps.time.minute(), gps.time.second());
-        displayMessage("UTC", timeBuf);
+        if (gps.time.isValid() && gps.date.isValid()) {
+            displayClock(true, gps.time.hour(), gps.time.minute(), gps.time.second());
+        } else {
+            displayClock(false);
+        }
     }
 }
