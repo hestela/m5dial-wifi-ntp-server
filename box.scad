@@ -6,9 +6,9 @@
 $fn = 48;
 
 // --- Outer dimensions ---
-box_w = 60;
-box_d = 110;
-box_h = 19;
+box_w = 66;
+box_d = 112;
+box_h = 32;
 wall  = 3;
 
 // --- Corner posts (heat-set inserts) ---
@@ -24,19 +24,19 @@ bolt_d = 3.4;  // M3 bolt clearance hole diameter
 usbc_w        = 25;  // cutout width
 usbc_h        = 8;   // cutout height
 usbc_r        = 3;   // corner radius — adjust when part arrives
-usbc_from_top = 7;   // distance from top of box to top edge of cutout
+usbc_from_floor = 2; // distance from inside floor to bottom edge of cutout
 
 // --- Lid ---
 lid_h     = 3;  // lid plate thickness
 lip_wall  = 2;  // locating lip wall thickness
 lip_depth = 3;  // how far the lip drops into the box opening
 
-// --- Lid pocket (inside face, back side) ---
-pocket_w    = 25.5;  // pocket width
-pocket_d    = 25.5;  // pocket depth
+// --- GPS antenna cavity (inside face of lid) ---
+pocket_w    = 25.5;  // GPS cutout width
+pocket_d    = 25.5;  // GPS cutout depth
 pocket_r    = 3;     // corner radius — adjust when needed
-pocket_from_edge = 9;  // distance from back edge of lid to nearest pocket edge
-pocket_depth = 1;    // how deep the pocket cuts into the lid
+pocket_from_edge = 9;  // distance from front edge of lid to nearest edge of GPS cutout
+pocket_depth = 1;    // depth of GPS cavity — adjust to match antenna thickness
 
 // --- Fillets ---
 fillet_r = 2;  // outside edge/corner fillet radius
@@ -64,14 +64,19 @@ module rounded_box(w, d, h, r) {
 // ============================================================
 // Helper: rounded lid plate — top edges and vertical edges filleted,
 // bottom face flat (seats on box). Works even when h < 2*r.
+// The intersection with the bounding cube forces a flat bottom by
+// clipping the spheres that would otherwise extend below z=0.
 // ============================================================
 module rounded_prism(w, d, h, r) {
-    hull()
-        for (x = [r, w-r])
-            for (y = [r, d-r]) {
-                translate([x, y, h-r]) sphere(r=r, $fn=32);    // top corners + top edges
-                translate([x, y, 0])   cylinder(r=r, h=h-r, $fn=32); // vertical edges to flat bottom
-            }
+    intersection() {
+        hull()
+            for (x = [r, w-r])
+                for (y = [r, d-r]) {
+                    translate([x, y, h-r]) sphere(r=r, $fn=32);    // top corners + top edges
+                    translate([x, y, 0])   cylinder(r=r, h=h-r, $fn=32); // vertical edges
+                }
+        cube([w, d, h]);  // clamps bottom flat at z=0
+    }
 }
 
 // ============================================================
@@ -94,10 +99,10 @@ module usbc_slot(depth) {
 // ============================================================
 module box_bottom() {
     // Z-center of USB-C cutout:
-    //   top of cutout  = box_h - usbc_from_top         = 19 - 9 = 10
-    //   bottom of cutout = top - usbc_h                = 10 - 8 =  2
-    //   center                                          = 6
-    usbc_z = box_h - usbc_from_top - usbc_h/2;
+    //   bottom of cutout = wall + usbc_from_floor       = 3 + 2 = 5
+    //   top of cutout    = bottom + usbc_h              = 5 + 8 = 13
+    //   center                                          = 9
+    usbc_z = wall + usbc_from_floor + usbc_h/2;
 
     difference() {
         union() {
@@ -159,14 +164,14 @@ module box_lid() {
         translate([box_w/2, box_d - 10 - 44/2, -1])
             cylinder(d=44, h=lid_h + 2);
 
-        // Rounded square pocket — inside face, centered side-to-side, 9 mm from back edge
+        // GPS antenna cavity — inside face of lid, centered side-to-side, 9 mm from front edge
         // Cuts 1 mm deep from the inside (z=0) face
-        translate([box_w/2, pocket_from_edge + pocket_d/2, 0])
+        translate([box_w/2, pocket_from_edge + pocket_d/2, -0.01])
             hull()
                 for (dx = [-(pocket_w/2 - pocket_r), (pocket_w/2 - pocket_r)])
                     for (dy = [-(pocket_d/2 - pocket_r), (pocket_d/2 - pocket_r)])
                         translate([dx, dy, 0])
-                            cylinder(r=pocket_r, h=pocket_depth);
+                            cylinder(r=pocket_r, h=pocket_depth + 0.01);
     }
 }
 
