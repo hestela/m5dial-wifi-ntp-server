@@ -18,9 +18,10 @@
 #endif
 
 // Grove Port A: GPS TX -> G13 (ESP32 RX), GPS RX -> G15 (ESP32 TX)
-#define GPS_RX_PIN 13
-#define GPS_TX_PIN 15
-#define GPS_BAUD   9600
+#define GPS_RX_PIN         13
+#define GPS_TX_PIN         15
+#define GPS_BAUD           9600
+#define GPS_UPDATE_PERIOD  10000  // ms between GPS fixes (UBX-CFG-RATE)
 
 #define NTP_PORT        123
 #define NTP_PACKET_SIZE 48
@@ -35,6 +36,30 @@ int         utcOffsetHours = 0;   // adjusted by encoder, range -12..+14
 // Snapshot updated each time a fresh GPS sentence is parsed
 volatile uint32_t gpsNtpSeconds = 0;  // NTP seconds at last GPS update
 volatile uint32_t gpsSnapshotMs = 0;  // millis() at that moment
+
+// --- GPS configuration ------------------------------------------------------
+
+// Send UBX-CFG-RATE to set the NEO-6M measurement period
+void setGpsUpdateRate(uint16_t periodMs) {
+    uint8_t payload[6] = {
+        (uint8_t)(periodMs & 0xFF), (uint8_t)(periodMs >> 8),  // measRate (ms)
+        0x01, 0x00,  // navRate = 1 cycle
+        0x01, 0x00,  // timeRef = GPS time
+    };
+
+    // Fletcher checksum over class, id, length, payload
+    uint8_t ckA = 0, ckB = 0;
+    uint8_t header[] = {0x06, 0x08, 0x06, 0x00};
+    for (uint8_t b : header)  { ckA += b; ckB += ckA; }
+    for (uint8_t b : payload) { ckA += b; ckB += ckA; }
+
+    Serial2.write(0xB5); Serial2.write(0x62);  // UBX sync chars
+    Serial2.write(header, 4);
+    Serial2.write(payload, 6);
+    Serial2.write(ckA);  Serial2.write(ckB);
+    Serial2.flush();
+    DBG_PRINTF("GPS update rate set to %ums\n", periodMs);
+}
 
 // --- Time helpers -----------------------------------------------------------
 
@@ -145,8 +170,10 @@ void startNtpServer() {
 
         uint8_t response[NTP_PACKET_SIZE] = {};
 
+        // Serve synchronised time as soon as GPS has valid time (includes hot-start
+        // cached RTC time — reliable without needing a full location fix)
         uint8_t liVnMode;
-        if (fixAcquired && gps.time.isValid() && gps.date.isValid()) {
+        if (gps.time.isValid() && gps.date.isValid()) {
             liVnMode = 0x24;  // LI=0 (no warning), VN=4, Mode=4 (server)
         } else {
             liVnMode = 0xE4;  // LI=3 (unsynchronised), VN=4, Mode=4
@@ -221,6 +248,8 @@ void setup() {
 
     // GPS
     Serial2.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+    delay(100);  // allow GPS UART to settle before sending UBX config
+    setGpsUpdateRate(GPS_UPDATE_PERIOD);
     DBG_PRINTLN("GPS initialised");
 
     // WiFi
