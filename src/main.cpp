@@ -27,15 +27,26 @@
 #define NTP_PACKET_SIZE 48
 #define NTP_EPOCH_OFFSET 2208988800UL  // seconds between 1 Jan 1900 and 1 Jan 1970
 
+enum TimeSource { SRC_NONE, SRC_RTC, SRC_GPS };
+
 TinyGPSPlus gps;
 AsyncUDP    udp;
-bool        fixAcquired    = false;
+TimeSource  timeSource     = SRC_NONE;
 long        lastEncoderPos = 0;
 int         utcOffsetHours = 0;   // adjusted by encoder, range -12..+14
 
 // Snapshot updated each time a fresh GPS sentence is parsed
 volatile uint32_t gpsNtpSeconds = 0;  // NTP seconds at last GPS update
 volatile uint32_t gpsSnapshotMs = 0;  // millis() at that moment
+
+// Display sleep
+uint32_t lastActivityMs  = 0;
+bool     displaySleeping = false;
+const uint32_t DISPLAY_SLEEP_MS   = 60000;  // blank after 1 min of inactivity
+
+// WiFi reconnection
+bool     wifiConnected     = false;
+const uint32_t WIFI_RETRY_MS = 10000;  // retry interval when disconnected
 
 // --- GPS configuration ------------------------------------------------------
 
@@ -152,7 +163,7 @@ void displayClock(bool valid, int h24, int m, const char *label) {
 
         M5Dial.Display.setTextFont(&fonts::FreeSans9pt7b);
         M5Dial.Display.setTextSize(1);
-        M5Dial.Display.drawString("waiting for GPS", CX, 192);
+        M5Dial.Display.drawString("no time source", CX, 192);
     }
 }
 
@@ -170,30 +181,31 @@ void startNtpServer() {
 
         uint8_t response[NTP_PACKET_SIZE] = {};
 
-        // Serve synchronised time as soon as GPS has valid time (includes hot-start
-        // cached RTC time — reliable without needing a full location fix)
-        uint8_t liVnMode;
-        if (gps.time.isValid() && gps.date.isValid()) {
-            liVnMode = 0x24;  // LI=0 (no warning), VN=4, Mode=4 (server)
-        } else {
-            liVnMode = 0xE4;  // LI=3 (unsynchronised), VN=4, Mode=4
+        uint8_t liVnMode, stratum, precision;
+        const char *refid;
+        switch (timeSource) {
+            case SRC_GPS:
+                liVnMode = 0x24; stratum = 1;  precision = 0xFA; refid = "GPS"; break;
+            case SRC_RTC:
+                liVnMode = 0x24; stratum = 2;  precision = 0x00; refid = "RTC"; break;
+            default:
+                liVnMode = 0xE4; stratum = 16; precision = 0x00; refid = "\0\0\0"; break;
         }
 
         uint32_t nowSec, nowFrac;
         currentNtpTime(nowSec, nowFrac);
 
         response[0]  = liVnMode;
-        response[1]  = 1;       // Stratum 1 — primary GPS reference
-        response[2]  = 4;       // Poll interval (2^4 = 16s)
-        response[3]  = 0xFA;    // Precision (-6 ~ 15ms)
+        response[1]  = stratum;
+        response[2]  = 4;         // Poll interval (2^4 = 16s)
+        response[3]  = precision;
 
         // Root delay and root dispersion (both ~0 for GPS)
         writeU32BE(response + 4, 0);
         writeU32BE(response + 8, 0);
 
-        // Reference identifier: "GPS\0"
-        response[12] = 'G'; response[13] = 'P';
-        response[14] = 'S'; response[15] = 0;
+        // Reference identifier (4 bytes)
+        memcpy(response + 12, refid, 4);
 
         // Reference timestamp (when clock was last set — the GPS snapshot)
         writeU32BE(response + 16, gpsNtpSeconds);
@@ -246,6 +258,28 @@ void setup() {
     M5Dial.Display.setTextColor(GREEN);
     M5Dial.Display.setTextDatum(middle_center);
 
+    // RTC holdover — seed gpsNtpSeconds from battery-backed RTC if plausible
+    if (M5Dial.Rtc.isEnabled()) {
+        auto dt = M5Dial.Rtc.getDateTime();
+        if (dt.date.year >= 2020) {
+            struct tm t = {};
+            t.tm_year  = dt.date.year - 1900;
+            t.tm_mon   = dt.date.month - 1;
+            t.tm_mday  = dt.date.date;
+            t.tm_hour  = dt.time.hours;
+            t.tm_min   = dt.time.minutes;
+            t.tm_sec   = dt.time.seconds;
+            t.tm_isdst = 0;
+            time_t unix   = mktime(&t);
+            gpsNtpSeconds = (uint32_t)(unix + NTP_EPOCH_OFFSET);
+            gpsSnapshotMs = millis();
+            timeSource    = SRC_RTC;
+            DBG_PRINTF("RTC holdover: %04d-%02d-%02d %02d:%02d:%02d\n",
+                dt.date.year, dt.date.month, dt.date.date,
+                dt.time.hours, dt.time.minutes, dt.time.seconds);
+        }
+    }
+
     // GPS
     Serial2.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
     delay(100);  // allow GPS UART to settle before sending UBX config
@@ -261,7 +295,7 @@ void setup() {
         while (Serial2.available()) gps.encode(Serial2.read());
         delay(250);
     }
-    WiFi.setSleep(false);  // disable modem sleep — reduces UDP latency for NTP
+    wifiConnected = true;
     DBG_PRINTF("WiFi connected — IP: %s\n", WiFi.localIP().toString().c_str());
 
     char ipLine[20];
@@ -269,9 +303,16 @@ void setup() {
     displayMessage("Connected", ipLine);
     delay(2000);
 
-    displayClock(false, 0, 0, "UTC");
+    if (timeSource != SRC_NONE) {
+        int h, m;
+        getDisplayTime(h, m);
+        displayClock(true, h, m, "UTC RTC");
+    } else {
+        displayClock(false, 0, 0, "UTC");
+    }
     DBG_PRINTLN("Waiting for GPS fix...");
 
+    lastActivityMs = millis();
     startNtpServer();
 }
 
@@ -286,21 +327,58 @@ void loop() {
     if (gps.time.isUpdated() && gps.date.isValid() && gps.time.isValid()) {
         gpsNtpSeconds = gpsToNtp();
         gpsSnapshotMs = millis();
+        timeSource    = SRC_GPS;
+
+        // Discipline the RTC so holdover is fresh after GPS loss or power cycle
+        struct tm t = {};
+        t.tm_year  = gps.date.year() - 1900;
+        t.tm_mon   = gps.date.month() - 1;
+        t.tm_mday  = gps.date.day();
+        t.tm_hour  = gps.time.hour();
+        t.tm_min   = gps.time.minute();
+        t.tm_sec   = gps.time.second();
+        t.tm_isdst = 0;
+        M5Dial.Rtc.setDateTime(&t);
     }
 
-    if (!fixAcquired && gps.location.isValid()) {
-        fixAcquired = true;
-        DBG_PRINTLN("GPS fix acquired!");
+    // --- WiFi reconnection --------------------------------------------------
+    static uint32_t lastWifiRetry = 0;
+    bool nowConnected = (WiFi.status() == WL_CONNECTED);
+
+    if (nowConnected && !wifiConnected) {
+        // Transition: just reconnected
+        wifiConnected = true;
+        DBG_PRINTF("WiFi reconnected — IP: %s\n", WiFi.localIP().toString().c_str());
+        startNtpServer();
+    } else if (!nowConnected && wifiConnected) {
+        // Transition: just lost connection
+        wifiConnected = false;
+        udp.close();
+        DBG_PRINTLN("WiFi lost");
+    } else if (!nowConnected) {
+        // Still disconnected — retry on interval
+        uint32_t now = millis();
+        if (now - lastWifiRetry >= WIFI_RETRY_MS) {
+            lastWifiRetry = now;
+            WiFi.disconnect();
+            WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+            DBG_PRINTLN("WiFi retry...");
+        }
     }
 
     static uint32_t lastDisplay = 0;
+
+    // --- User input ---------------------------------------------------------
+
+    bool activity = false;
 
     // Button press resets offset to UTC
     if (M5Dial.BtnA.wasPressed()) {
         utcOffsetHours = 0;
         M5Dial.Encoder.write(0);
         lastEncoderPos = 0;
-        lastDisplay    = 0;  // force immediate redraw
+        lastDisplay    = 0;
+        activity       = true;
     }
 
     // Encoder adjusts UTC offset (each step = 1 hour)
@@ -309,24 +387,49 @@ void loop() {
         utcOffsetHours += (int)(pos - lastEncoderPos);
         utcOffsetHours  = constrain(utcOffsetHours, -12, 14);
         lastEncoderPos  = pos;
-        lastDisplay     = 0;  // force immediate redraw
+        lastDisplay     = 0;
+        activity        = true;
     }
 
-    // Build timezone label
-    char label[10];
-    if (utcOffsetHours == 0)
-        strcpy(label, "UTC");
-    else
-        snprintf(label, sizeof(label), "UTC%+d", utcOffsetHours);
+    if (activity) {
+        lastActivityMs = millis();
+        if (displaySleeping) {
+            displaySleeping = false;  // wake — redraw triggered by lastDisplay == 0
+        }
+    }
 
-    // Update display on minute change or immediately after encoder change
+    // --- Display sleep ------------------------------------------------------
+
+    if (!displaySleeping && millis() - lastActivityMs >= DISPLAY_SLEEP_MS) {
+        displaySleeping = true;
+        M5Dial.Display.clear();
+    }
+
+    if (displaySleeping) return;
+
+    // --- Display update -----------------------------------------------------
+
+    // Build timezone + source + WiFi label
+    char label[20];
+    const char *src      = (timeSource == SRC_GPS) ? " GPS" : (timeSource == SRC_RTC) ? " RTC" : "";
+    const char *wifiSfx  = wifiConnected ? "" : " !WiFi";
+    if (utcOffsetHours == 0)
+        snprintf(label, sizeof(label), "UTC%s%s", src, wifiSfx);
+    else
+        snprintf(label, sizeof(label), "UTC%+d%s%s", utcOffsetHours, src, wifiSfx);
+
     static int lastMinute = -1;
     int curMinute = -1;
-    if (gps.time.isValid()) curMinute = (gps.time.minute() + utcOffsetHours * 60) % 60;
+    if (timeSource != SRC_NONE) {
+        uint32_t sec, frac;
+        currentNtpTime(sec, frac);
+        time_t unix = (time_t)(sec - NTP_EPOCH_OFFSET) + utcOffsetHours * 3600;
+        curMinute = gmtime(&unix)->tm_min;
+    }
     if (lastDisplay == 0 || curMinute != lastMinute) {
         lastMinute  = curMinute;
         lastDisplay = millis();
-        if (gps.time.isValid() && gps.date.isValid()) {
+        if (timeSource != SRC_NONE) {
             int h, m;
             getDisplayTime(h, m);
             displayClock(true, h, m, label);
