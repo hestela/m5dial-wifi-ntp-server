@@ -167,6 +167,38 @@ void displayClock(bool valid, int h24, int m, const char *label) {
     }
 }
 
+// Shutdown countdown — count is 3/2/1 while holding, called only on change
+void displayShutdown(int count) {
+    M5Dial.Display.clear();
+    M5Dial.Display.setTextFont(&fonts::Orbitron_Light_32);
+    M5Dial.Display.setTextSize(2);
+    char buf[4];
+    snprintf(buf, sizeof(buf), "%d", count);
+    M5Dial.Display.drawString(buf, CX, CY - 16);
+    M5Dial.Display.setTextFont(&fonts::FreeSans9pt7b);
+    M5Dial.Display.setTextSize(1);
+    M5Dial.Display.drawString("hold to power off", CX, CY + 32);
+}
+
+// Power off: cut 3V3 via HOLD (GPIO46) for battery operation; encoder knob (GPIO42)
+// wakes the device. Falls back to deep sleep when running from USB.
+void powerOff() {
+    M5Dial.Display.clear();
+    M5Dial.Display.setBrightness(0);
+
+    // Wake on encoder knob press (GPIO42 / WAKE signal, active low)
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_42, 0);
+
+    // Drive HOLD (GPIO46) low — cuts the 3V3 regulator when on battery
+    pinMode(46, OUTPUT);
+    digitalWrite(46, LOW);
+
+    // Short delay to let the HOLD circuit act, then deep sleep as fallback
+    // (on USB the 3V3 rail stays up so deep sleep handles that case)
+    delay(50);
+    esp_deep_sleep_start();
+}
+
 // --- NTP server -------------------------------------------------------------
 
 void startNtpServer() {
@@ -372,13 +404,51 @@ void loop() {
 
     bool activity = false;
 
-    // Button press resets offset to UTC
-    if (M5Dial.BtnA.wasPressed()) {
-        utcOffsetHours = 0;
-        M5Dial.Encoder.write(0);
-        lastEncoderPos = 0;
-        lastDisplay    = 0;
-        activity       = true;
+    // Button: short press resets UTC offset; hold 4s (with 3/2/1 countdown) powers off
+    {
+        static uint32_t btnPressStart    = 0;
+        static bool     inShutdown       = false;
+        static int      lastShutdownCount = -1;
+
+        if (M5Dial.BtnA.isPressed()) {
+            if (btnPressStart == 0) {
+                btnPressStart = millis();
+                activity      = true;  // wake display on first press
+            }
+            uint32_t held = millis() - btnPressStart;
+            if (held >= 1000) {
+                // Show countdown: 3 at 1s, 2 at 2s, 1 at 3s, power off at 4s
+                int count = 3 - (int)((held - 1000) / 1000);
+                count = constrain(count, 1, 3);
+                if (count != lastShutdownCount) {
+                    lastShutdownCount = count;
+                    inShutdown        = true;
+                    displaySleeping   = false;
+                    displayShutdown(count);
+                }
+                if (held >= 4000) {
+                    powerOff();
+                }
+            }
+        } else {
+            if (btnPressStart != 0) {
+                uint32_t held = millis() - btnPressStart;
+                if (!inShutdown && held < 1000) {
+                    // Short press: reset UTC offset
+                    utcOffsetHours = 0;
+                    M5Dial.Encoder.write(0);
+                    lastEncoderPos = 0;
+                    lastDisplay    = 0;
+                    activity       = true;
+                } else if (inShutdown) {
+                    // Released early — cancel shutdown, force clock redraw
+                    lastDisplay = 0;
+                }
+                btnPressStart     = 0;
+                inShutdown        = false;
+                lastShutdownCount = -1;
+            }
+        }
     }
 
     // Encoder adjusts UTC offset (each step = 1 hour)
