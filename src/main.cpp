@@ -4,6 +4,7 @@
 #include <AsyncUDP.h>
 #include <time.h>
 #include "config.h"
+#include <WebServer.h>
 
 #ifdef DEBUG
   #define DBG_BEGIN(baud)   Serial.begin(baud)
@@ -31,6 +32,7 @@ enum TimeSource { SRC_NONE, SRC_RTC, SRC_GPS };
 
 TinyGPSPlus gps;
 AsyncUDP    udp;
+WebServer   httpServer(80);
 TimeSource  timeSource     = SRC_NONE;
 long        lastEncoderPos = 0;
 int         utcOffsetHours = 0;   // adjusted by encoder, range -12..+14
@@ -271,6 +273,23 @@ void startNtpServer() {
     });
 }
 
+// --- HTTP server ------------------------------------------------------------
+
+void handleGps() {
+    if (!gps.location.isValid()) {
+        httpServer.send(503, "application/json", "{\"error\":\"no GPS fix\"}");
+        return;
+    }
+    char body[256];
+    snprintf(body, sizeof(body),
+        "{\"lat\":%.6f,\"lon\":%.6f,\"alt_m\":%.1f,\"satellites\":%u,\"speed_knots\":%.2f,\"course_deg\":%.2f,\"fix\":true}",
+        gps.location.lat(), gps.location.lng(),
+        gps.altitude.meters(), (unsigned)gps.satellites.value(),
+        gps.speed.knots(), gps.course.deg()
+    );
+    httpServer.send(200, "application/json", body);
+}
+
 // --- Setup / Loop -----------------------------------------------------------
 
 void setup() {
@@ -347,17 +366,20 @@ void setup() {
 
     lastActivityMs = millis();
     startNtpServer();
+    httpServer.on("/gps", HTTP_GET, handleGps);
+    httpServer.begin();
 }
 
 void loop() {
     M5Dial.update();
+    if (wifiConnected) httpServer.handleClient();
 
     while (Serial2.available()) {
         gps.encode(Serial2.read());
     }
 
     // Snapshot time whenever a fresh GPS sentence arrives
-    if (gps.time.isUpdated() && gps.date.isValid() && gps.time.isValid()) {
+    if (gps.time.isUpdated() && gps.date.isValid() && gps.time.isValid() && gps.location.isValid()) {
         gpsNtpSeconds = gpsToNtp();
         gpsSnapshotMs = millis();
         timeSource    = SRC_GPS;
@@ -383,6 +405,7 @@ void loop() {
         wifiConnected = true;
         DBG_PRINTF("WiFi reconnected — IP: %s\n", WiFi.localIP().toString().c_str());
         startNtpServer();
+        httpServer.begin();
     } else if (!nowConnected && wifiConnected) {
         // Transition: just lost connection
         wifiConnected = false;
