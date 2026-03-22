@@ -16,7 +16,9 @@
 
 TinyGPSPlus gps;
 AsyncUDP    udp;
-bool        fixAcquired = false;
+bool        fixAcquired    = false;
+long        lastEncoderPos = 0;
+int         utcOffsetHours = 0;   // adjusted by encoder, range -12..+14
 
 // Snapshot updated each time a fresh GPS sentence is parsed
 volatile uint32_t gpsNtpSeconds = 0;  // NTP seconds at last GPS update
@@ -44,6 +46,15 @@ void currentNtpTime(uint32_t &seconds, uint32_t &fraction) {
     seconds  = gpsNtpSeconds + elapsed / 1000;
     // NTP fraction: 2^32 units per second, so 1ms = 4294967 units
     fraction = (elapsed % 1000) * 4294967UL;
+}
+
+// Time with UTC offset applied — uses interpolated NTP time so gmtime handles rollovers
+void getDisplayTime(int &h, int &m, int &s) {
+    uint32_t sec, frac;
+    currentNtpTime(sec, frac);
+    time_t unix = (time_t)(sec - NTP_EPOCH_OFFSET) + utcOffsetHours * 3600;
+    struct tm *t = gmtime(&unix);
+    h = t->tm_hour; m = t->tm_min; s = t->tm_sec;
 }
 
 // Write a 32-bit value big-endian into a buffer
@@ -77,7 +88,7 @@ void displayMessage(const char *line1, const char *line2 = nullptr) {
 //   y= 88  H:MM  — Orbitron_Light_32 size 2  (~64px tall)
 //   y=152  :SS AM/PM — Orbitron_Light_32 size 1  (~32px tall)
 //   y=192  "UTC" — FreeSans9pt7b size 1
-void displayClock(bool valid, int h24 = 0, int m = 0, int s = 0) {
+void displayClock(bool valid, int h24, int m, int s, const char *label) {
     M5Dial.Display.clear();
 
     if (valid) {
@@ -97,7 +108,7 @@ void displayClock(bool valid, int h24 = 0, int m = 0, int s = 0) {
         M5Dial.Display.drawString(secBuf, CX, 152);
 
         M5Dial.Display.setTextFont(&fonts::FreeSans9pt7b);
-        M5Dial.Display.drawString("UTC", CX, 192);
+        M5Dial.Display.drawString(label, CX, 192);
     } else {
         M5Dial.Display.setTextFont(&fonts::Orbitron_Light_32);
         M5Dial.Display.setTextSize(2);
@@ -107,7 +118,7 @@ void displayClock(bool valid, int h24 = 0, int m = 0, int s = 0) {
         M5Dial.Display.drawString(":--", CX, 152);
 
         M5Dial.Display.setTextFont(&fonts::FreeSans9pt7b);
-        M5Dial.Display.drawString("waiting for GPS", CX, 192);
+        M5Dial.Display.drawString(label, CX, 192);
     }
 }
 
@@ -185,7 +196,7 @@ void startNtpServer() {
 void setup() {
     auto cfg = M5.config();
     cfg.serial_baudrate = 115200;
-    M5Dial.begin(cfg, false, false);
+    M5Dial.begin(cfg, true, false);
     Serial.begin(115200);
 
     // Ensure mktime() treats tm as UTC
@@ -216,7 +227,7 @@ void setup() {
     displayMessage("Connected", ipLine);
     delay(2000);
 
-    displayClock(false);
+    displayClock(false, 0, 0, 0, "UTC");
     Serial.println("Waiting for GPS fix...");
 
     startNtpServer();
@@ -240,14 +251,42 @@ void loop() {
         Serial.println("GPS fix acquired!");
     }
 
-    // Update display once per second
     static uint32_t lastDisplay = 0;
+
+    // Button press resets offset to UTC
+    if (M5Dial.BtnA.wasPressed()) {
+        utcOffsetHours = 0;
+        M5Dial.Encoder.write(0);
+        lastEncoderPos = 0;
+        lastDisplay    = 0;  // force immediate redraw
+    }
+
+    // Encoder adjusts UTC offset (each step = 1 hour)
+    long pos = M5Dial.Encoder.read();
+    if (pos != lastEncoderPos) {
+        utcOffsetHours += (int)(pos - lastEncoderPos);
+        utcOffsetHours  = constrain(utcOffsetHours, -12, 14);
+        lastEncoderPos  = pos;
+        lastDisplay     = 0;  // force immediate redraw
+    }
+
+    // Build timezone label
+    char label[10];
+    if (utcOffsetHours == 0)
+        strcpy(label, "UTC");
+    else
+        snprintf(label, sizeof(label), "UTC%+d", utcOffsetHours);
+
+    // Update display once per second (or immediately after encoder change)
     if (millis() - lastDisplay >= 1000) {
         lastDisplay = millis();
+
         if (gps.time.isValid() && gps.date.isValid()) {
-            displayClock(true, gps.time.hour(), gps.time.minute(), gps.time.second());
+            int h, m, s;
+            getDisplayTime(h, m, s);
+            displayClock(true, h, m, s, label);
         } else {
-            displayClock(false);
+            displayClock(false, 0, 0, 0, label);
         }
     }
 }
