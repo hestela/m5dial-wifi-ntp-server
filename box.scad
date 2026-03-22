@@ -24,12 +24,19 @@ bolt_d = 3.4;  // M3 bolt clearance hole diameter
 usbc_w        = 25;  // cutout width
 usbc_h        = 8;   // cutout height
 usbc_r        = 3;   // corner radius — adjust when part arrives
-usbc_from_top = 9;   // distance from top of box to top edge of cutout
+usbc_from_top = 7;   // distance from top of box to top edge of cutout
 
 // --- Lid ---
 lid_h     = 3;  // lid plate thickness
 lip_wall  = 2;  // locating lip wall thickness
 lip_depth = 3;  // how far the lip drops into the box opening
+
+// --- Lid pocket (inside face, back side) ---
+pocket_w    = 25.5;  // pocket width
+pocket_d    = 25.5;  // pocket depth
+pocket_r    = 3;     // corner radius — adjust when needed
+pocket_from_edge = 9;  // distance from back edge of lid to nearest pocket edge
+pocket_depth = 1;    // how deep the pocket cuts into the lid
 
 // --- Derived (do not edit) ---
 inner_w = box_w - 2*wall;            // 54
@@ -123,6 +130,15 @@ module box_lid() {
         // 44 mm circular hole — centered side-to-side, 10 mm from front face
         translate([box_w/2, box_d - 10 - 44/2, -1])
             cylinder(d=44, h=lid_h + 2);
+
+        // Rounded square pocket — inside face, centered side-to-side, 9 mm from back edge
+        // Cuts 1 mm deep from the inside (z=0) face
+        translate([box_w/2, pocket_from_edge + pocket_d/2, 0])
+            hull()
+                for (dx = [-(pocket_w/2 - pocket_r), (pocket_w/2 - pocket_r)])
+                    for (dy = [-(pocket_d/2 - pocket_r), (pocket_d/2 - pocket_r)])
+                        translate([dx, dy, 0])
+                            cylinder(r=pocket_r, h=pocket_depth);
     }
 }
 
