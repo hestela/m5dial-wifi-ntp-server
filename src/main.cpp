@@ -121,7 +121,7 @@ const int CY = 120;  // display centre y
 // Small status messages used during WiFi/GPS init phases
 void displayMessage(const char *line1, const char *line2 = nullptr) {
     M5Dial.Display.clear();
-    M5Dial.Display.setTextFont(&fonts::FreeSans9pt7b);
+    M5Dial.Display.setFont(&fonts::FreeSans9pt7b);
     M5Dial.Display.setTextSize(1);
     if (line2) {
         M5Dial.Display.drawString(line1, CX, CY - 16);
@@ -147,21 +147,21 @@ void displayClock(bool valid, int h24, int m, const char *label) {
         char hmBuf[8];
         snprintf(hmBuf, sizeof(hmBuf), "%d:%02d", h12, m);
 
-        M5Dial.Display.setTextFont(&fonts::Orbitron_Light_32);
+        M5Dial.Display.setFont(&fonts::Orbitron_Light_32);
         M5Dial.Display.setTextSize(2);
         M5Dial.Display.drawString(hmBuf, CX, 100);
 
         M5Dial.Display.setTextSize(1);
         M5Dial.Display.drawString(pm ? "PM" : "AM", CX, 162);
 
-        M5Dial.Display.setTextFont(&fonts::FreeSans9pt7b);
+        M5Dial.Display.setFont(&fonts::FreeSans9pt7b);
         M5Dial.Display.drawString(label, CX, 200);
     } else {
-        M5Dial.Display.setTextFont(&fonts::Orbitron_Light_32);
+        M5Dial.Display.setFont(&fonts::Orbitron_Light_32);
         M5Dial.Display.setTextSize(2);
         M5Dial.Display.drawString("--:--", CX, 100);
 
-        M5Dial.Display.setTextFont(&fonts::FreeSans9pt7b);
+        M5Dial.Display.setFont(&fonts::FreeSans9pt7b);
         M5Dial.Display.setTextSize(1);
         M5Dial.Display.drawString("no time source", CX, 192);
     }
@@ -170,12 +170,12 @@ void displayClock(bool valid, int h24, int m, const char *label) {
 // Shutdown countdown — count is 3/2/1 while holding, called only on change
 void displayShutdown(int count) {
     M5Dial.Display.clear();
-    M5Dial.Display.setTextFont(&fonts::Orbitron_Light_32);
+    M5Dial.Display.setFont(&fonts::Orbitron_Light_32);
     M5Dial.Display.setTextSize(2);
     char buf[4];
     snprintf(buf, sizeof(buf), "%d", count);
     M5Dial.Display.drawString(buf, CX, CY - 16);
-    M5Dial.Display.setTextFont(&fonts::FreeSans9pt7b);
+    M5Dial.Display.setFont(&fonts::FreeSans9pt7b);
     M5Dial.Display.setTextSize(1);
     M5Dial.Display.drawString("hold to power off", CX, CY + 32);
 }
@@ -321,6 +321,7 @@ void setup() {
     // WiFi
     displayMessage("WiFi...");
     DBG_PRINTF("Connecting to %s\n", WIFI_SSID);
+    WiFi.setHostname("esp32-ntpserv");
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     while (WiFi.status() != WL_CONNECTED) {
         // Keep feeding GPS while waiting so we don't miss sentences
@@ -393,6 +394,7 @@ void loop() {
         if (now - lastWifiRetry >= WIFI_RETRY_MS) {
             lastWifiRetry = now;
             WiFi.disconnect();
+            WiFi.setHostname("esp32-ntpserv");
             WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
             DBG_PRINTLN("WiFi retry...");
         }
