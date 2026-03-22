@@ -18,7 +18,9 @@ insert_d     = 4.2;  // heat-set insert hole diameter
 insert_depth = 6.0;  // depth of insert hole — adjust to match insert length
 
 // --- Lid bolt holes ---
-bolt_d = 3.4;  // M3 bolt clearance hole diameter
+bolt_d      = 3.4;  // M3 bolt clearance hole diameter
+csk_d       = 6.0;  // M3 countersink head diameter (90° ISO)
+csk_h       = (csk_d - bolt_d) / 2;  // cone depth for 90° countersink = 1.3 mm
 
 // --- USB-C panel mount cutout (front wall) ---
 usbc_w        = 25;  // cutout width
@@ -154,11 +156,16 @@ module box_lid() {
                 }
         }
 
-        // M3 bolt clearance holes — aligned with bottom post centers
+        // M3 bolt clearance holes + countersink chamfer on outside face
         for (px = [post_cx, box_w - post_cx])
-            for (py = [post_cy, box_d - post_cy])
+            for (py = [post_cy, box_d - post_cy]) {
+                // Through hole
                 translate([px, py, -1])
                     cylinder(d=bolt_d, h=lid_h + 2);
+                // 90° countersink cone — sits on outside (top) face of lid
+                translate([px, py, lid_h - csk_h])
+                    cylinder(d1=bolt_d, d2=csk_d, h=csk_h + 0.01);
+            }
 
         // 44 mm circular hole — centered side-to-side, 10 mm from front face
         translate([box_w/2, box_d - 10 - 44/2, -1])
