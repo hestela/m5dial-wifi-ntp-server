@@ -38,6 +38,9 @@ pocket_r    = 3;     // corner radius — adjust when needed
 pocket_from_edge = 9;  // distance from back edge of lid to nearest pocket edge
 pocket_depth = 1;    // how deep the pocket cuts into the lid
 
+// --- Fillets ---
+fillet_r = 2;  // outside edge/corner fillet radius
+
 // --- Derived (do not edit) ---
 inner_w = box_w - 2*wall;            // 54
 inner_d = box_d - 2*wall;            // 104
@@ -45,6 +48,31 @@ inner_h = box_h - wall;              // 16 (floor to open top)
 post_r  = post_od / 2;               // 4.1
 post_cx = wall + post_gap + post_r;  // 7.6 — from each outer edge
 post_cy = wall + post_gap + post_r;  // 7.6
+
+// ============================================================
+// Helper: box with filleted vertical edges and bottom corners, flat top.
+// ============================================================
+module rounded_box(w, d, h, r) {
+    hull()
+        for (x = [r, w-r])
+            for (y = [r, d-r]) {
+                translate([x, y, r])   sphere(r=r, $fn=32);   // bottom corners
+                translate([x, y, r])   cylinder(r=r, h=h-r, $fn=32); // vertical edges to flat top
+            }
+}
+
+// ============================================================
+// Helper: rounded lid plate — top edges and vertical edges filleted,
+// bottom face flat (seats on box). Works even when h < 2*r.
+// ============================================================
+module rounded_prism(w, d, h, r) {
+    hull()
+        for (x = [r, w-r])
+            for (y = [r, d-r]) {
+                translate([x, y, h-r]) sphere(r=r, $fn=32);    // top corners + top edges
+                translate([x, y, 0])   cylinder(r=r, h=h-r, $fn=32); // vertical edges to flat bottom
+            }
+}
 
 // ============================================================
 // Helper: rounded-rectangle slot extruded in the +Y direction
@@ -75,7 +103,7 @@ module box_bottom() {
         union() {
             // Hollow shell — interior carved out first so posts aren't subtracted
             difference() {
-                cube([box_w, box_d, box_h]);
+                rounded_box(box_w, box_d, box_h, fillet_r);
                 // Interior cavity (keeps floor and walls, opens the top)
                 translate([wall, wall, wall])
                     cube([inner_w, inner_d, inner_h + 1]);
@@ -108,8 +136,8 @@ module box_bottom() {
 module box_lid() {
     difference() {
         union() {
-            // Flat top plate
-            cube([box_w, box_d, lid_h]);
+            // Flat top plate with filleted vertical edges
+            rounded_prism(box_w, box_d, lid_h, fillet_r);
 
             // Locating lip on underside — outer dims match inner box (54×104),
             // lip_wall thick, drops lip_depth below the plate.
