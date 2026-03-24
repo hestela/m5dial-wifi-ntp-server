@@ -28,6 +28,12 @@ usbc_h        = 8;   // cutout height
 usbc_r        = 3;   // corner radius — adjust when part arrives
 usbc_from_floor = 2; // distance from inside floor to bottom edge of cutout
 
+// --- M5Dial mounting hole (lid) ---
+m5dial_hole_d         = 44;   // diameter of the M5Dial bezel cutout
+m5dial_hole_from_back = 11;   // distance from back edge of lid to nearest edge of hole
+m5dial_recess_d       = m5dial_hole_d + 8.2;  // diameter of inside-face seating recess
+m5dial_recess_depth   = 2;    // depth of seating recess from inside face
+
 // --- Lid ---
 lid_h     = 3;  // lid plate thickness
 lip_wall  = 2;  // locating lip wall thickness
@@ -167,9 +173,13 @@ module box_lid() {
                     cylinder(d1=bolt_d, d2=csk_d, h=csk_h + 0.01);
             }
 
-        // 44 mm circular hole — centered side-to-side, 10 mm from front face
-        translate([box_w/2, box_d - 10 - 44/2, -1])
-            cylinder(d=44, h=lid_h + 2);
+        // M5Dial bezel cutout — centered side-to-side, m5dial_hole_from_back mm from back face
+        translate([box_w/2, box_d - m5dial_hole_from_back - m5dial_hole_d/2, -1])
+            cylinder(d=m5dial_hole_d, h=lid_h + 2);
+
+        // M5Dial seating recess — inside face of lid, 2 mm deeper than hole, 2 mm larger diameter
+        translate([box_w/2, box_d - m5dial_hole_from_back - m5dial_hole_d/2, -0.01])
+            cylinder(d=m5dial_recess_d, h=m5dial_recess_depth + 0.01);
 
         // GPS antenna cavity — inside face of lid, centered side-to-side, 9 mm from front edge
         // Cuts 1 mm deep from the inside (z=0) face
