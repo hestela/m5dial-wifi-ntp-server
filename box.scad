@@ -22,11 +22,14 @@ bolt_d      = 3.4;  // M3 bolt clearance hole diameter
 csk_d       = 6.0;  // M3 countersink head diameter (90° ISO)
 csk_h       = (csk_d - bolt_d) / 2;  // cone depth for 90° countersink = 1.3 mm
 
-// --- USB-C panel mount cutout (front wall) ---
-usbc_w        = 25;  // cutout width
-usbc_h        = 8;   // cutout height
-usbc_r        = 3;   // corner radius — adjust when part arrives
-usbc_from_floor = 2; // distance from inside floor to bottom edge of cutout
+// --- USB-C breakout board cutout (front wall) ---
+// PCB glued to box floor; port faces front wall
+usbc_port_w    = 8.95;  // connector opening width
+usbc_port_h    = 3.19;  // connector opening height
+usbc_pcb_h     = 1.55;  // breakout PCB thickness
+usbc_clearance = 0.4;   // clearance around port opening
+usbc_chamfer   = 3.0;   // chamfer expansion on outer wall face for cable insertion
+usbc_r         = 0.5;   // corner radius on cutout
 
 // --- M5Dial mounting hole (lid) ---
 m5dial_hole_d         = 44;   // diameter of the M5Dial bezel cutout
@@ -88,18 +91,37 @@ module rounded_prism(w, d, h, r) {
 }
 
 // ============================================================
-// Helper: rounded-rectangle slot extruded in the +Y direction
+// Helper: rounded-rectangle disc in the XZ plane at a given Y offset.
+// Used as hull() seed for the chamfered USB-C slot.
+// ============================================================
+module usbc_face(w, h, y_pos) {
+    for (dx = [-(w/2 - usbc_r), (w/2 - usbc_r)])
+        for (dz = [-(h/2 - usbc_r), (h/2 - usbc_r)])
+            translate([dx, y_pos, dz])
+                rotate([-90, 0, 0])
+                    cylinder(r=usbc_r, h=0.01, $fn=16);
+}
+
+// ============================================================
+// Helper: chamfered USB-C slot extruded in the +Y direction.
+// Outer face (y=0) is chamfer-expanded; inner face (y=depth) is tight.
 // Centered at caller's origin in X and Z.
 // ============================================================
 module usbc_slot(depth) {
-    ox = usbc_w/2 - usbc_r;
-    oz = usbc_h/2 - usbc_r;
-    hull()
-        for (dx = [-ox, ox])
-            for (dz = [-oz, oz])
-                translate([dx, 0, dz])
-                    rotate([-90, 0, 0])
-                        cylinder(r=usbc_r, h=depth);
+    cw = usbc_port_w + 2*usbc_clearance;      // tight width
+    ch = usbc_port_h + 2*usbc_clearance;      // tight height
+    ow = cw + 2*usbc_chamfer;                 // flared width (outer face)
+    oh = ch + 2*usbc_chamfer;                 // flared height (outer face)
+    // Chamfer tapers through the wall only — tight at inner wall face (depth-2)
+    hull() {
+        usbc_face(ow, oh, 0);                 // outer wall face — large opening
+        usbc_face(cw, ch, depth - 2);         // inner wall face — tight fit
+    }
+    // Straight bore past inner wall to ensure clean subtraction
+    hull() {
+        usbc_face(cw, ch, depth - 2);
+        usbc_face(cw, ch, depth - 0.01);
+    }
 }
 
 // ============================================================
@@ -107,10 +129,12 @@ module usbc_slot(depth) {
 // ============================================================
 module box_bottom() {
     // Z-center of USB-C cutout:
-    //   bottom of cutout = wall + usbc_from_floor       = 3 + 2 = 5
-    //   top of cutout    = bottom + usbc_h              = 5 + 8 = 13
-    //   center                                          = 9
-    usbc_z = wall + usbc_from_floor + usbc_h/2;
+    //   PCB sits on floor: PCB bottom = wall = 3 mm (outside Z)
+    //   PCB top  = wall + usbc_pcb_h         = 3 + 1.55 = 4.55 mm
+    //   port bottom = PCB top                = 4.55 mm
+    //   port top    = port bottom + port_h   = 4.55 + 3.19 = 7.74 mm
+    //   center                               = 6.145 mm
+    usbc_z = wall + usbc_pcb_h + usbc_port_h/2;
 
     difference() {
         union() {
