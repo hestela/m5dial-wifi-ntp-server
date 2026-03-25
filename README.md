@@ -41,6 +41,9 @@ You can swap the RX/TX pins if you update the code, you mainly just need to get 
 I used a GY-NEO6MV1 but that's not really available anymore, there is a MV2 now which seems to be the same thing. But its really just a u-blox NEO-6M.  
 The exact GPS module shouldn't matter much as most of them are UART and many of themn support 5v or 3v, but it is best if you grab one that claims to support 5v logic level.
 
+The JST connector under the microcontroller, at least for me and with my JST cables the red wire was negative and black was positive.  
+So what I had to do was connect the male JST into the ESP32 and then solder a female JST to it but with the black and red wires flipped so that plugging in the battery it would be correct. The PCB under the ESP32 says which side of the JST is battery negative (again this is the red wire).
+
 
 ## Setup
 
