@@ -476,8 +476,8 @@ void loop() {
         }
     }
 
-    // Encoder adjusts UTC offset (each step = 1 hour)
-    long pos = M5Dial.Encoder.read();
+    // Encoder adjusts UTC offset (each detent = 1 hour; 4 raw pulses per detent)
+    long pos = M5Dial.Encoder.read() / 4;
     if (pos != lastEncoderPos) {
         utcOffsetHours += (int)(pos - lastEncoderPos);
         utcOffsetHours  = constrain(utcOffsetHours, -12, 14);
