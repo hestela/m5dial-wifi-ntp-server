@@ -35,7 +35,8 @@ The GPS module connects to the M5Dial's Grove Port A:
 | TX  | G13 (ESP32 RX2) |
 | RX  | G15 (ESP32 TX2) |
 | VCC | 5 V |
-| GND | GND |
+| GND | GND |  
+
 You can swap the RX/TX pins if you update the code, you mainly just need to get the VCC and GND correct.  
 I used a GY-NEO6MV1 but that's not really available anymore, there is a MV2 now which seems to be the same thing. But its really just a u-blox NEO-6M.  
 The exact GPS module shouldn't matter much as most of them are UART and many of themn support 5v or 3v, but it is best if you grab one that claims to support 5v logic level.
@@ -43,7 +44,7 @@ The exact GPS module shouldn't matter much as most of them are UART and many of 
 
 ## Setup
 
-1. Copy `include/config.h` and fill in your WiFi credentials:
+1. Edit `include/config.h` and fill in your WiFi credentials:
 
    ```cpp
    #define WIFI_SSID     "your-network"
