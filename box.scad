@@ -35,7 +35,8 @@ usbc_r         = 0.5;   // corner radius on cutout
 m5dial_hole_d         = 44;   // diameter of the M5Dial bezel cutout
 m5dial_hole_from_back = 11;   // distance from back edge of lid to nearest edge of hole
 m5dial_recess_d       = m5dial_hole_d + 8.2;  // diameter of inside-face seating recess
-m5dial_recess_depth   = 2;    // depth of seating recess from inside face
+// set to 0 since I ended up not needing the recess around the m5dial for the ring
+m5dial_recess_depth   = 0;    // depth of seating recess from inside face
 
 // --- Lid ---
 lid_h     = 3;  // lid plate thickness
